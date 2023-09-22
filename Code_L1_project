@@ -1,0 +1,580 @@
+// Temperature Sensor
+#include <OneWire.h>
+#include <DallasTemperature.h>
+// i2c display
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+// servo motor
+#include <Servo.h>
+// keypad
+#include <Keypad.h>
+#include <IRremote.h> // Include the IRremote library
+#include <HX711.h>
+// color sensor
+#define S0_PIN 23
+#define S1_PIN 25
+#define S2_PIN 27
+#define S3_PIN 29
+#define OUT_PIN 31
+// temperature
+OneWire oneWire(45);
+DallasTemperature sensors(&oneWire);
+// servo
+Servo myservo;
+// Create an instance of the HX711 library
+HX711 scale;
+const int Relay_Pin_1 = 35; // Relay
+const int Relay_Pin_2 = 37;
+const int Relay_Pin_3 = 39;
+// Define the HX711 circuit pins
+const int LOADCELL_DOUT_PIN = 26;
+const int LOADCELL_SCK_PIN = 24;
+const int calibration_factor = 429.5;
+const int Level_Sensor = 33;
+const int Cup_Level_Sensor = 3;
+const int buzzerPin = 2; // Change this to the pin number you're using
+const int IR_PIN = A4; // The digital pin connected to the OUT pin of the IR sensor
+IRrecv irrecv(IR_PIN);
+decode_results results;
+int count = 0;
+bool testingEnable = false;
+bool irSensorActivated = false; // Flag to track if IR sensor has been activated
+int z = 0;
+int pos = 0;
+bool Half_Enable = true;
+bool Customer_Enable = true;
+bool lidOpen = false;
+int value;
+int Half_L_Count;
+const byte ROWS = 4;
+const byte COLS = 4;
+const int BUFFER_SIZE = 3;
+char key;
+char buffer[BUFFER_SIZE];
+int bufferIndex = 0;
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+float pH_value;
+int weight, density;
+int volume = 750;
+const int pHPin = A0;
+const int gasSensorPin = A1;
+const float pHCalibrationValue = 21.34 - 0.7;
+const int NUM_COLUMNS = 16; // Assuming the LCD display has 16 columns
+// Define the keypad matrix
+char keys[ROWS][COLS] = {
+{ '1', '2', '3', 'A' },
+{ '4', '5', '6', 'B' },
+{ '7', '8', '9', 'C' },
+{ '*', '0', '#', 'D' }
+};
+// Pin numbers connected to the keypad rows and columns
+byte rowPins[ROWS] = { 10, 9, 8, 7 };
+byte colPins[COLS] = { 6, 5, 4, 3 };
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+void setup() {
+// Temperature
+Serial.begin(9600);
+sensors.begin();
+sensors.setResolution(12);
+// color sensor
+pinMode(S0_PIN, OUTPUT);
+pinMode(S1_PIN, OUTPUT);
+pinMode(S2_PIN, OUTPUT);
+pinMode(S3_PIN, OUTPUT);
+pinMode(OUT_PIN, INPUT);
+// solenoid
+pinMode(Relay_Pin_1, OUTPUT);
+pinMode(Relay_Pin_2, OUTPUT);
+pinMode(Relay_Pin_3, OUTPUT);
+// Relay
+digitalWrite(Relay_Pin_1, HIGH);
+digitalWrite(Relay_Pin_2, HIGH);
+digitalWrite(Relay_Pin_3, HIGH);
+// water level sensor
+pinMode(Level_Sensor, INPUT);
+pinMode(Cup_Level_Sensor, INPUT);
+// color sensor
+digitalWrite(S0_PIN, HIGH);
+digitalWrite(S1_PIN, LOW);
+myservo.attach(47); // attaches the servo on pin 9 to the servo object
+pinMode(buzzerPin, OUTPUT);
+irrecv.enableIRIn(); // Start the IR receiver
+// Initialize the HX711 module
+scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
+scale.set_scale(calibration_factor); // This value needs to be adjusted for calibration
+scale.tare();
+lcd.init();
+lcd.backlight();
+}
+void loop() {
+bool selectionMade = false;
+while (!selectionMade) {
+lcd.init(); // initialize the lcd
+Wire.begin();
+lcd.backlight();
+lcd.setCursor(0, 0);
+lcd.print("A-SELLER");
+lcd.setCursor(0, 1);
+lcd.print("B-CUSTOMER");
+lcd.setCursor(10, 0);
+lcd.print("C-OPEN");
+delay(1000);
+key = keypad.getKey();
+if (key == 'A') {
+seller();
+selectionMade = true;
+} else if (key == 'B') {
+customer();
+selectionMade = true;
+} else if (key == 'C') {
+open();
+selectionMade = true;
+while (key != 'D') {
+key = keypad.getKey();
+}
+close();
+selectionMade = true;
+} else {
+// Show the options until a valid selection (A or B) is made
+continue;
+}
+// Add a small delay to avoid fast looping and improve performance
+delay(100);
+}
+}
+void seller() {
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("POUR THE MILK");
+lcd.setCursor(0, 1);
+lcd.print("FOR TESTING");
+delay(5000);
+key = keypad.getKey();
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("PRESS D TO");
+lcd.setCursor(0, 1);
+lcd.print("CONTINUE...");
+delay(6000);
+do {
+testingEnable = true;
+Testing();
+} while (key == 'D');
+}
+void customer() {
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("ENTER AMOUNT");
+lcd.setCursor(0, 1);
+lcd.print("OF MILK:");
+int value = 0; // Change value data type to int
+bufferIndex = 0;
+Customer_Enable = true;
+do {
+InputNumber(value); // Pass value by reference to InputNumber function
+lcd.setCursor(11, 1);
+lcd.print(value); // Print the two-digit integer value
+delay(200);
+} while (key != '#'); // Exit the loop when '#'
+// Define a variable to keep track of the current cursor position
+if (key == '*') {
+value = value / 10; // Remove the last digit from the value
+bufferIndex--; // Decrement the buffer index to overwrite the last character
+lcd.setCursor(11, 1);
+lcd.print(" "); // Clear the last digit on the display
+delay(200); // Add a small delay for the user to notice the change
+} else // '#' key was pressed
+{
+float milkAmount = value / 10.0; // Convert the two-digit integer back to a float value between 0.0 and 2.5
+if (milkAmount >= 0.0 && milkAmount <= 2.5) {
+Half_L_Count = milkAmount * 2;
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("FILLING PROCESS");
+Half_Tank();
+} else {
+lcd.clear();
+lcd.print("Invalid Value!");
+delay(2000); // Display the "Invalid Value" message for 2 seconds
+}
+}
+delay(20);
+}
+void InputNumber(int &value) // Receive value by reference to modify the original variable
+{
+key = keypad.getKey();
+if (key != NO_KEY) {
+if (key >= '0' && key <= '9') {
+buffer[bufferIndex] = key;
+bufferIndex++;
+// Check if two digits have been entered
+if (bufferIndex >= 2) {
+buffer[bufferIndex] = '\0'; // Add null terminator to mark the end of the string
+value = atoi(buffer); // Convert the buffer to an integer
+// Validate the entered value (between 0 and 25)
+if (value >= 0 && value <= 25) {
+Serial.print("Entered Value:");
+Serial.println(value);
+} else {
+Serial.println("Invalid Value!");
+value = 0; // Reset value to 0 for invalid inputs
+}
+bufferIndex = 0; // Reset the buffer index for the next input
+}
+delay(100); // Debounce delay
+} else if (key == 'A') {
+if (bufferIndex > 0) {
+bufferIndex--; // Remove the last digit from the buffer
+buffer[bufferIndex] = '\0'; // Add null terminator to mark the end of the string
+value = atoi(buffer); // Convert the buffer to an integer
+Serial.print("Last Value Deleted. New Value: ");
+Serial.println(value);
+lcd.setCursor(11, 1);
+lcd.print(" "); // Clear the last digit on the display
+delay(200); // Add a small delay for the user to notice the change
+}
+}
+}
+}
+void Testing() {
+setup();
+do {
+// Start serial communication for debugging purposes
+Serial.begin(9600);
+// Start up the library
+sensors.begin();
+// Temperature Sensor
+sensors.requestTemperatures();
+float temperatureC = sensors.getTempCByIndex(0);
+Serial.print("Temperature:");
+Serial.print(temperatureC, 2);
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("TEMPERATURE OF");
+lcd.setCursor(0, 1);
+lcd.print("THE MILK: ");
+lcd.print(temperatureC, 2);
+delay(5000);
+if (temperatureC < 35) {
+count++;
+}
+// PH Sensor
+float pHValue = readpH();
+Serial.print("pH Value:");
+Serial.println(pHValue);
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("PH VALUE OF");
+lcd.setCursor(0, 1);
+lcd.print("THE MILK:");
+lcd.print(pHValue, 2);
+delay(5000);
+if (pHValue < 9 && pHValue > 5) {
+count++;
+}
+// Gas Sensor
+int sensorValue = analogRead(gasSensorPin);
+float voltage = sensorValue * (5.0 / 1023.0);
+float gasConcentration = (2.5 - voltage) / 0.2;
+Serial.print("Sensor Value: ");
+Serial.print(sensorValue);
+Serial.print(", Voltage: ");
+Serial.print(voltage);
+Serial.print("V, Gas Concentration: ");
+Serial.print(gasConcentration);
+Serial.println(" ppm");
+if (sensorValue < 20) {
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("MILK CONSISTs");
+lcd.setCursor(0, 1);
+lcd.print("POISONOUS GAS");
+delay(5000);
+count++;
+} else {
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("NO POISONOUS GAS");
+lcd.setCursor(0, 1);
+lcd.print("IN THE MILK");
+delay(5000);
+}
+// Color Sensor
+int r, g, b;
+r = process_red_value();
+delay(500);
+g = process_green_value();
+delay(500);
+b = process_blue_value();
+delay(500);
+Serial.print("r = ");
+Serial.print(r);
+Serial.print(" ");
+Serial.print("g = ");
+Serial.print(g);
+Serial.print(" ");
+Serial.print("b = ");
+Serial.print(b);
+// Weight sensor
+if (scale.is_ready()) {
+float weight = scale.get_units(); // Read the weight in units configured by the calibration factor
+// Print the weight to the serial monitor
+Serial.print("Weight: ");
+Serial.print(weight);
+Serial.println(" gr");
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("WEIGHT OF");
+lcd.setCursor(0, 1);
+lcd.print("THE MILK:");
+lcd.setCursor(10, 1);
+lcd.print(weight);
+lcd.setCursor(15, 1);
+lcd.print("g");
+delay(5000);
+lcd.clear();
+}
+float density = weightCheck();
+Serial.print("density:");
+Serial.println(density);
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("DENSITY OF");
+lcd.setCursor(0, 1);
+lcd.print("THE MILK:");
+lcd.setCursor(10, 1);
+lcd.print(density);
+lcd.setCursor(15, 1);
+lcd.print("g/cm3");
+delay(5000);
+lcd.clear();
+if (r < 100 && g < 100 && b < 100) {
+Serial.println("Identified as milk");
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("COLOUR OF MILK");
+lcd.setCursor(0, 1);
+lcd.print("MATCHED");
+delay(5000);
+count++;
+} else {
+Serial.println("This is not milk");
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("COLOUR OF MILK");
+lcd.setCursor(0, 1);
+lcd.print("NOT MATCHED");
+delay(5000);
+}
+z += 1;
+} while (z < 1);
+testingEnable = false;
+lcd.clear();
+if (count == 4) {
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("THE MILK IS");
+lcd.setCursor(0, 1);
+lcd.print("ACCEPTABLE");
+delay(5000);
+} else {
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("THE MILK IS");
+lcd.setCursor(0, 1);
+lcd.print("NOT ACCEPTABLE");
+delay(5000);
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("REMOVE THE");
+lcd.setCursor(0, 1);
+lcd.print("MILK...");
+}
+delay(5000);
+lcd.clear();
+}
+float readpH() {
+int sensorValue = analogRead(pHPin);
+float voltage = sensorValue * (5.0 / 1024.0);
+float pH = -5.70 * voltage + pHCalibrationValue;
+return pH;
+}
+float weightCheck() {
+density = weight / 500;
+return density;
+}
+int process_red_value() {
+digitalWrite(S2_PIN, LOW);
+digitalWrite(S3_PIN, LOW);
+int pulse_length = pulseIn(OUT_PIN, LOW);
+return pulse_length;
+}
+int process_green_value() {
+digitalWrite(S2_PIN, HIGH);
+digitalWrite(S3_PIN, HIGH);
+int pulse_length = pulseIn(OUT_PIN, LOW);
+return pulse_length;
+}
+int process_blue_value() {
+digitalWrite(S2_PIN, LOW);
+digitalWrite(S3_PIN, HIGH);
+int pulse_length = pulseIn(OUT_PIN, LOW);
+return pulse_length;
+}
+void Half_Tank() {
+int irValue = 0;
+int sensorValue = 0;
+int timeElapsed = 0;
+for (int i = 0; i < Half_L_Count; i++) {
+if (!Half_Enable) {
+break; // Exit the loop if Half_Enable becomes false
+}
+while (sensorValue == 0) {
+turnOnRelay(1);
+sensorValue = digitalRead(Level_Sensor);
+Serial.println(sensorValue);
+timeElapsed += 100;
+if (timeElapsed >= 20000) {
+Serial.println(timeElapsed);
+tone(buzzerPin, 1000); // Play the buzzer sound
+delay(1000);
+noTone(buzzerPin);
+turnOffRelay(1);
+return;
+}
+delay(100);
+}
+timeElapsed = 0; // Reset the time elapsed
+while (sensorValue == 1) {
+turnOnRelay(2);
+delay(15000);
+sensorValue = digitalRead(Level_Sensor);
+Serial.println(sensorValue);
+}
+turnOffRelay(2);
+lcd.clear();
+lcd.setCursor(0, 1);
+lcd.print("FILLING:");
+lcd.print((i + 1) * 0.5); // Print the calculated value
+Serial.print(i);
+lcd.print(" L");
+sensorValue = 0;
+}
+// After the loop completes or is stopped, turn off all relays
+turnOffAllRelays();
+lcd.clear();
+lcd.print("Finished!");
+lcd.clear();
+irValue = analogRead(IR_PIN); // Read the value from the IR sensor
+Serial.println("ir");
+Serial.println(irValue);
+while (irValue > 500) {
+tone(buzzerPin, 500);
+delay(500);
+irValue = analogRead(IR_PIN);
+}
+while (irValue < 500) {
+// Stop the buzzer sound for 500ms
+noTone(buzzerPin);
+delay(500);
+turnOnRelay(3);
+delay(15000);
+turnOffRelay(3);
+irValue = analogRead(IR_PIN);
+}
+irValue = 0;
+delay(500); // Add a small delay for stability
+}
+void Customer() {
+while (Customer_Enable) {
+key = keypad.getKey();
+int CupsensorValue = digitalRead(Cup_Level_Sensor);
+if (CupsensorValue == 0) {
+delay(1000);
+lcd.setCursor(0, 1);
+lcd.print("GET MILK");
+turnOffRelay(3);
+} else {
+lcd.setCursor(0, 1);
+lcd.print("PLACE THE CUP");
+}
+if (key == '#') {
+Customer_Enable = false;
+}
+}
+turnOnRelay(3);
+delay(2000);
+turnOffRelay(3);
+}
+void open() {
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("LID IS OPEN");
+lcd.setCursor(0, 1);
+lcd.print("PRESS D CLOSE");
+// Turn 90 degrees clockwise
+for (pos = 90; pos <= 180; pos += 1) {
+myservo.write(pos);
+delay(30); // Add a small delay to make the servo movement smooth
+}
+lidOpen = true; // Update the lid status variable
+}
+void close() {
+lcd.clear();
+lcd.setCursor(0, 0);
+lcd.print("LID IS CLOSED");
+// Turn 90 degrees counterclockwise
+for (pos = 180; pos >= 90; pos -= 1) {
+myservo.write(pos);
+delay(30); // Add a small delay to make the servo movement smooth
+}
+lidOpen = false; // Update the lid status variable
+}
+void turnOnRelay(int relayNumber) {
+switch (relayNumber) {
+case 1:
+digitalWrite(Relay_Pin_1, LOW);
+break;
+case 2:
+digitalWrite(Relay_Pin_2, LOW);
+break;
+case 3:
+digitalWrite(Relay_Pin_3, LOW);
+break;
+default:
+// Invalid relay number, do nothing
+break;
+}
+}
+void turnOffRelay(int relayNumber) {
+switch (relayNumber) {
+case 1:
+digitalWrite(Relay_Pin_1, HIGH);
+break;
+case 2:
+digitalWrite(Relay_Pin_2, HIGH);
+break;
+case 3:
+digitalWrite(Relay_Pin_3, HIGH);
+break;
+default:
+// Invalid relay number, do nothing
+break;
+}
+}
+void turnOffAllRelays() {
+turnOffRelay(1);
+turnOffRelay(2);
+turnOffRelay(3);
+}
+void buzz(int duration) {
+// Generate a square wave at the desired frequency (Hz) for the given duration
+// You can experiment with different frequencies to change the pitch of the sound
+int frequency = 1000; // Change this to set the desired frequency in Hz
+for (long i = 0; i < duration * 1000L; i += frequency * 2) {
+digitalWrite(buzzerPin, HIGH);
+delayMicroseconds(frequency);
+digitalWrite(buzzerPin, LOW);
+delayMicroseconds(frequency);
+}
+}
